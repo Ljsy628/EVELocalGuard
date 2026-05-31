@@ -538,6 +538,9 @@ class LocalGuardApp:
         self.clear_streak = 0
         self.alerted_count = 0
         self.last_alert_at = 0.0
+        self.alert_active = False
+        self.alert_popup = None
+        self.alert_sound_job = None
 
         self.status_var = tk.StringVar(value="未开始")
         self.count_var = tk.StringVar(value="疑似威胁：0 行")
@@ -664,6 +667,8 @@ class LocalGuardApp:
         self.stop_button.pack(side="left", padx=(0, 8))
         ttk.Button(button_frame, text="测试识别并保存截图", command=self.test_capture).pack(side="left", padx=(0, 8))
         ttk.Button(button_frame, text="测试声音", command=self.test_sound).pack(side="left", padx=(0, 8))
+        self.ack_button = ttk.Button(button_frame, text="确认告警", command=self.acknowledge_alert, state="disabled")
+        self.ack_button.pack(side="left", padx=(0, 8))
         ttk.Button(button_frame, text="保存配置", command=self.save_config_from_vars).pack(side="left", padx=(0, 8))
         ttk.Button(button_frame, text="打开配置目录", command=self.open_config_dir).pack(side="right")
 
@@ -836,6 +841,7 @@ class LocalGuardApp:
 
     def stop_monitoring(self) -> None:
         self.monitoring = False
+        self.acknowledge_alert(log_message=False)
         if self.grabber is not None:
             self.grabber.close()
             self.grabber = None
@@ -899,10 +905,58 @@ class LocalGuardApp:
     def alert(self, result: ThreatResult) -> None:
         message = f"检测到威胁：{result.count} 行（红橙 {result.explicit_count}，白/中立 {result.neutral_count}）"
         self.log(message)
+        if self.alert_active:
+            self.status_var.set("告警中，等待确认")
+            return
+
+        self.alert_active = True
+        self.ack_button.configure(state="normal")
+        self.status_var.set("告警中，等待确认")
         if bool(self.vars["sound"].get()):
-            self.play_alert_sound()
+            self.start_alert_sound_loop()
         if bool(self.vars["popup"].get()):
             self.show_alert_popup(message)
+
+    def start_alert_sound_loop(self) -> None:
+        if not self.alert_active or not bool(self.vars["sound"].get()):
+            return
+        self.play_alert_sound()
+        self.alert_sound_job = self.root.after(1200, self.start_alert_sound_loop)
+
+    def stop_alert_sound_loop(self) -> None:
+        if self.alert_sound_job is not None:
+            try:
+                self.root.after_cancel(self.alert_sound_job)
+            except Exception:
+                pass
+            self.alert_sound_job = None
+        if sys.platform == "win32":
+            try:
+                import winsound
+
+                winsound.PlaySound(None, 0)
+            except Exception:
+                pass
+
+    def acknowledge_alert(self, log_message: bool = True) -> None:
+        was_active = self.alert_active
+        self.alert_active = False
+        self.stop_alert_sound_loop()
+        try:
+            self.ack_button.configure(state="disabled")
+        except Exception:
+            pass
+        if self.alert_popup is not None:
+            try:
+                if self.alert_popup.winfo_exists():
+                    self.alert_popup.destroy()
+            except Exception:
+                pass
+            self.alert_popup = None
+        if was_active and log_message:
+            self.log("告警已确认，声音已停止。")
+        if self.monitoring:
+            self.status_var.set("监控中")
 
     def play_alert_sound(self) -> None:
         if sys.platform == "win32":
@@ -933,20 +987,29 @@ class LocalGuardApp:
         self.play_alert_sound()
 
     def show_alert_popup(self, message: str) -> None:
+        if self.alert_popup is not None:
+            try:
+                if self.alert_popup.winfo_exists():
+                    self.alert_popup.lift()
+                    return
+            except Exception:
+                self.alert_popup = None
+
         popup = tk.Toplevel(self.root)
+        self.alert_popup = popup
         popup.title("EVE Local Guard")
         popup.attributes("-topmost", True)
         popup.resizable(False, False)
+        popup.protocol("WM_DELETE_WINDOW", self.acknowledge_alert)
         frame = ttk.Frame(popup, padding=14)
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="本地出现疑似威胁", font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w")
         ttk.Label(frame, text=message).pack(anchor="w", pady=(6, 10))
-        ttk.Button(frame, text="知道了", command=popup.destroy).pack(anchor="e")
+        ttk.Button(frame, text="确认并停止声音", command=self.acknowledge_alert).pack(anchor="e")
         popup.update_idletasks()
         x = self.root.winfo_rootx() + max(0, self.root.winfo_width() - popup.winfo_width() - 18)
         y = self.root.winfo_rooty() + 48
         popup.geometry(f"+{x}+{y}")
-        popup.after(7000, lambda: popup.winfo_exists() and popup.destroy())
 
     def test_capture(self) -> None:
         if PIL_IMPORT_ERROR is not None:
