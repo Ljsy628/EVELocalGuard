@@ -4,8 +4,8 @@ EVE Local Guard
 
 A small Windows companion tool that watches a user-selected part of the
 screen and alerts when EVE Online's local member list contains hostile or
-neutral rows. Blue and purple rows are treated as friendly. Red, orange, and
-rows without a blue/purple friendly marker are treated as threats.
+neutral rows. Blue, purple, and green rows are treated as friendly. Red,
+orange, and rows without a friendly marker are treated as threats.
 """
 
 from __future__ import annotations
@@ -414,7 +414,8 @@ class ThreatDetector:
     def _is_friend_pixel(self, r: int, g: int, b: int) -> bool:
         blue = b >= 135 and r <= 130 and (b - r) >= 45 and (b - g) >= 20
         purple = r >= 85 and b >= 115 and g <= 125 and (b - g) >= 30 and (r - g) >= 15
-        return blue or purple
+        green = g >= 115 and r <= 125 and b <= 125 and (g - r) >= 35 and (g - b) >= 25
+        return blue or purple or green
 
     def _is_hostile_pixel(self, r: int, g: int, b: int) -> bool:
         red = False
@@ -536,7 +537,7 @@ class LocalGuardApp:
 
         subtitle = ttk.Label(
             outer,
-            text="蓝/紫视为友方；红/橙或无蓝紫标记的玩家行视为威胁。",
+            text="蓝/紫/绿视为友方；红/橙或无友方标记的玩家行视为威胁。",
             foreground="#555555",
         )
         subtitle.pack(anchor="w", pady=(2, 10))
