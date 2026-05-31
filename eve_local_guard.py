@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import math
 import os
+import struct
 import sys
 import time
 import traceback
+import wave
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -70,6 +73,7 @@ DEFAULT_CONFIG = {
         "alert_orange": True,
         "alert_white": True,
         "sound": True,
+        "sound_effect": "alarm",
         "popup": True,
         "persistent_alert": False,
         "topmost": True,
@@ -99,8 +103,13 @@ def app_data_dir() -> str:
     else:
         root = os.path.expanduser("~")
     path = os.path.join(root, CONFIG_DIR_NAME)
-    os.makedirs(path, exist_ok=True)
-    return path
+    try:
+        os.makedirs(path, exist_ok=True)
+        return path
+    except OSError:
+        fallback = os.path.join(os.path.abspath(os.getcwd()), CONFIG_DIR_NAME)
+        os.makedirs(fallback, exist_ok=True)
+        return fallback
 
 
 def config_path() -> str:
@@ -146,6 +155,45 @@ def save_config(data: Dict) -> None:
 
 def crash_log_path() -> str:
     return os.path.join(app_data_dir(), "crash.log")
+
+
+def alert_sound_path() -> str:
+    return os.path.join(app_data_dir(), "alert.wav")
+
+
+def ensure_alert_sound() -> str:
+    path = alert_sound_path()
+    if os.path.exists(path):
+        return path
+
+    sample_rate = 44100
+    volume = 0.55
+    pattern = [
+        (880, 0.16),
+        (0, 0.05),
+        (1320, 0.16),
+        (0, 0.05),
+        (660, 0.28),
+    ]
+    samples = bytearray()
+
+    for freq, duration in pattern:
+        count = int(sample_rate * duration)
+        for index in range(count):
+            if freq <= 0:
+                value = 0
+            else:
+                fade = min(1.0, index / 500, (count - index) / 500)
+                value = int(32767 * volume * fade * math.sin(2 * math.pi * freq * index / sample_rate))
+            samples.extend(struct.pack("<h", value))
+
+    with wave.open(path, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(sample_rate)
+        handle.writeframes(bytes(samples))
+
+    return path
 
 
 def write_crash_log(exc: BaseException) -> str:
@@ -527,6 +575,7 @@ class LocalGuardApp:
             "alert_orange": tk.BooleanVar(value=bool(scan["alert_orange"])),
             "alert_white": tk.BooleanVar(value=bool(scan["alert_white"])),
             "sound": tk.BooleanVar(value=bool(scan["sound"])),
+            "sound_effect": tk.StringVar(value=str(scan["sound_effect"])),
             "popup": tk.BooleanVar(value=bool(scan["popup"])),
             "persistent_alert": tk.BooleanVar(value=bool(scan["persistent_alert"])),
             "topmost": tk.BooleanVar(value=bool(scan["topmost"])),
@@ -614,6 +663,7 @@ class LocalGuardApp:
         self.stop_button = ttk.Button(button_frame, text="停止", command=self.stop_monitoring, state="disabled")
         self.stop_button.pack(side="left", padx=(0, 8))
         ttk.Button(button_frame, text="测试识别并保存截图", command=self.test_capture).pack(side="left", padx=(0, 8))
+        ttk.Button(button_frame, text="测试声音", command=self.test_sound).pack(side="left", padx=(0, 8))
         ttk.Button(button_frame, text="保存配置", command=self.save_config_from_vars).pack(side="left", padx=(0, 8))
         ttk.Button(button_frame, text="打开配置目录", command=self.open_config_dir).pack(side="right")
 
@@ -684,6 +734,7 @@ class LocalGuardApp:
             scan[key] = parse_int(self.vars[key].get(), DEFAULT_CONFIG["scan"][key])
         for key in ["alert_red", "alert_orange", "alert_white", "sound", "popup", "persistent_alert", "topmost"]:
             scan[key] = bool(self.vars[key].get())
+        scan["sound_effect"] = str(self.vars["sound_effect"].get() or "alarm")
         return {
             "region": {
                 "x": region.x,
@@ -858,14 +909,28 @@ class LocalGuardApp:
             try:
                 import winsound
 
-                winsound.PlaySound("SystemExclamation", winsound.SND_ALIAS | winsound.SND_ASYNC)
+                winsound.PlaySound(ensure_alert_sound(), winsound.SND_FILENAME | winsound.SND_ASYNC)
                 return
-            except Exception:
-                pass
+            except Exception as exc:
+                self.log(f"播放告警音效失败，改用系统提示音：{exc}")
+                try:
+                    winsound.PlaySound("SystemExclamation", winsound.SND_ALIAS | winsound.SND_ASYNC)
+                    return
+                except Exception:
+                    pass
         try:
-            self.root.bell()
+            for delay in (0, 180, 360):
+                self.root.after(delay, self.root.bell)
         except Exception:
             pass
+
+    def test_sound(self) -> None:
+        if not bool(self.vars["sound"].get()):
+            self.log("声音开关已关闭，测试声音不会播放。")
+            messagebox.showinfo(APP_NAME, "声音开关已关闭。勾选“声音”后再测试。")
+            return
+        self.log("播放测试告警音效。")
+        self.play_alert_sound()
 
     def show_alert_popup(self, message: str) -> None:
         popup = tk.Toplevel(self.root)
