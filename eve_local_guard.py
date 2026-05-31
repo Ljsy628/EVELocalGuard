@@ -54,11 +54,12 @@ DEFAULT_CONFIG = {
         "height": 460,
     },
     "scan": {
+        "detector_version": 2,
         "interval_ms": 700,
         "marker_x": 0,
         "marker_width": 0,
         "min_pixels_per_row": 6,
-        "min_row_content_pixels": 18,
+        "min_row_content_pixels": 28,
         "row_merge_gap": 3,
         "min_cluster_height": 3,
         "max_cluster_height": 80,
@@ -128,6 +129,11 @@ def load_config() -> Dict:
         if isinstance(scan, dict) and "min_row_content_pixels" not in scan:
             scan["marker_width"] = 0
             scan["max_cluster_height"] = DEFAULT_CONFIG["scan"]["max_cluster_height"]
+        if isinstance(scan, dict) and int(scan.get("detector_version", 1)) < DEFAULT_CONFIG["scan"]["detector_version"]:
+            scan["detector_version"] = DEFAULT_CONFIG["scan"]["detector_version"]
+            scan["marker_width"] = 0
+            scan["min_pixels_per_row"] = DEFAULT_CONFIG["scan"]["min_pixels_per_row"]
+            scan["min_row_content_pixels"] = DEFAULT_CONFIG["scan"]["min_row_content_pixels"]
         return deep_merge(DEFAULT_CONFIG, data)
     except Exception:
         return deep_merge(DEFAULT_CONFIG, {})
@@ -412,9 +418,12 @@ class ThreatDetector:
         return bright_text or self._is_friend_pixel(r, g, b) or self._is_hostile_pixel(r, g, b)
 
     def _is_friend_pixel(self, r: int, g: int, b: int) -> bool:
-        blue = b >= 135 and r <= 130 and (b - r) >= 45 and (b - g) >= 20
-        purple = r >= 85 and b >= 115 and g <= 125 and (b - g) >= 30 and (r - g) >= 15
-        green = g >= 115 and r <= 125 and b <= 125 and (g - r) >= 35 and (g - b) >= 25
+        # EVE's standing icons are anti-aliased and can be quite dark after
+        # transparency/background blending, so use relative color dominance
+        # instead of only bright absolute thresholds.
+        blue = b >= 85 and b >= r + 28 and b >= g + 14
+        purple = r >= 70 and b >= 90 and r >= g + 12 and b >= g + 22
+        green = g >= 85 and g >= r + 28 and g >= b + 18
         return blue or purple or green
 
     def _is_hostile_pixel(self, r: int, g: int, b: int) -> bool:
@@ -422,16 +431,15 @@ class ThreatDetector:
         orange = False
 
         if self.options.alert_red:
-            red = r >= 125 and g <= 115 and b <= 115 and (r - g) >= 30 and (r - b) >= 25
+            red = r >= 95 and r >= g + 28 and r >= b + 24
 
         if self.options.alert_orange:
             orange = (
-                r >= 115
-                and 35 <= g <= 165
-                and b <= 125
-                and (r - g) >= 12
-                and (r - b) >= 35
-                and g >= b - 12
+                r >= 95
+                and g >= 45
+                and r >= g + 12
+                and r >= b + 32
+                and g >= b + 8
             )
 
         return red or orange
@@ -659,6 +667,7 @@ class LocalGuardApp:
     def current_config(self) -> Dict:
         region = self.region_from_vars()
         scan = self.config["scan"].copy()
+        scan["detector_version"] = DEFAULT_CONFIG["scan"]["detector_version"]
         for key in [
             "interval_ms",
             "marker_x",
