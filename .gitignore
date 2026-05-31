@@ -1,0 +1,8 @@
+EVELocalGuard-source.zip
+dist/
+build/
+.venv/
+*.spec
+__pycache__/
+*.pyc
+*.pyo
