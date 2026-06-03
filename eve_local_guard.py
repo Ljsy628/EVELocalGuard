@@ -50,7 +50,7 @@ except Exception as exc:  # pragma: no cover - depends on user environment
 
 APP_NAME = "EVE Local Guard"
 CONFIG_DIR_NAME = "EVELocalGuard"
-NTFY_TOPIC = "eve-local-guard-8f3k29xq7m"
+DEFAULT_NTFY_TOPIC = "eve-local-guard-8f3k29xq7m"
 
 
 DEFAULT_CONFIG = {
@@ -76,6 +76,7 @@ DEFAULT_CONFIG = {
         "alert_red": True,
         "alert_orange": True,
         "alert_white": False,
+        "software_alert": True,
         "sound": True,
         "sound_effect": "alarm",
         "popup": True,
@@ -83,7 +84,7 @@ DEFAULT_CONFIG = {
         "topmost": True,
         "mobile_push": False,
         "ntfy_server": "https://ntfy.sh",
-        "ntfy_topic": NTFY_TOPIC,
+        "ntfy_topic": DEFAULT_NTFY_TOPIC,
     },
 }
 
@@ -154,8 +155,6 @@ def load_config() -> Dict:
             scan["max_cluster_height"] = DEFAULT_CONFIG["scan"]["max_cluster_height"]
             scan["required_frames"] = DEFAULT_CONFIG["scan"]["required_frames"]
             scan["alert_white"] = DEFAULT_CONFIG["scan"]["alert_white"]
-        if isinstance(scan, dict):
-            scan["ntfy_topic"] = NTFY_TOPIC
         return deep_merge(DEFAULT_CONFIG, data)
     except Exception:
         return deep_merge(DEFAULT_CONFIG, {})
@@ -629,6 +628,7 @@ class LocalGuardApp:
             "alert_red": tk.BooleanVar(value=bool(scan["alert_red"])),
             "alert_orange": tk.BooleanVar(value=bool(scan["alert_orange"])),
             "alert_white": tk.BooleanVar(value=bool(scan["alert_white"])),
+            "software_alert": tk.BooleanVar(value=bool(scan.get("software_alert", True))),
             "sound": tk.BooleanVar(value=bool(scan["sound"])),
             "sound_effect": tk.StringVar(value=str(scan["sound_effect"])),
             "popup": tk.BooleanVar(value=bool(scan["popup"])),
@@ -636,6 +636,7 @@ class LocalGuardApp:
             "topmost": tk.BooleanVar(value=bool(scan["topmost"])),
             "mobile_push": tk.BooleanVar(value=bool(scan.get("mobile_push", False))),
             "ntfy_server": tk.StringVar(value=str(scan.get("ntfy_server", DEFAULT_CONFIG["scan"]["ntfy_server"]))),
+            "ntfy_topic": tk.StringVar(value=str(scan.get("ntfy_topic", DEFAULT_NTFY_TOPIC))),
         }
 
     def _build_ui(self) -> None:
@@ -693,6 +694,7 @@ class LocalGuardApp:
             ("红色", "alert_red"),
             ("橙色", "alert_orange"),
             ("白/中立", "alert_white"),
+            ("软件报警", "software_alert"),
             ("声音", "sound"),
             ("弹窗", "popup"),
             ("持续提醒", "persistent_alert"),
@@ -724,10 +726,10 @@ class LocalGuardApp:
             pady=6,
         )
         ttk.Label(mobile_frame, text="Topic").grid(row=0, column=3, sticky="e", padx=(8, 4), pady=6)
-        ttk.Label(mobile_frame, text=NTFY_TOPIC, foreground="#555555").grid(
+        ttk.Entry(mobile_frame, textvariable=self.vars["ntfy_topic"], width=28).grid(
             row=0,
             column=4,
-            sticky="w",
+            sticky="ew",
             padx=(0, 8),
             pady=6,
         )
@@ -841,6 +843,7 @@ class LocalGuardApp:
             "alert_red",
             "alert_orange",
             "alert_white",
+            "software_alert",
             "sound",
             "popup",
             "persistent_alert",
@@ -850,7 +853,7 @@ class LocalGuardApp:
             scan[key] = bool(self.vars[key].get())
         scan["sound_effect"] = str(self.vars["sound_effect"].get() or "alarm")
         scan["ntfy_server"] = normalize_ntfy_server(self.vars["ntfy_server"].get())
-        scan["ntfy_topic"] = NTFY_TOPIC
+        scan["ntfy_topic"] = normalize_ntfy_topic(self.vars["ntfy_topic"].get()) or DEFAULT_NTFY_TOPIC
         return {
             "region": {
                 "x": region.x,
@@ -952,7 +955,7 @@ class LocalGuardApp:
 
     def stop_monitoring(self) -> None:
         self.monitoring = False
-        self.acknowledge_alert(log_message=False)
+        self.acknowledge_alert(log_message=False, stop_monitoring_on_ack=False)
         if self.grabber is not None:
             self.grabber.close()
             self.grabber = None
@@ -1026,10 +1029,13 @@ class LocalGuardApp:
         self.ack_button.configure(state="normal")
         self.status_var.set("告警中，等待确认")
         self.send_mobile_alert_start(result, message)
-        if bool(self.vars["sound"].get()):
-            self.start_alert_sound_loop()
-        if bool(self.vars["popup"].get()):
-            self.show_alert_popup(message)
+        if bool(self.vars["software_alert"].get()):
+            if bool(self.vars["sound"].get()):
+                self.start_alert_sound_loop()
+            if bool(self.vars["popup"].get()):
+                self.show_alert_popup(message)
+        else:
+            self.log("软件报警已关闭，仅发送手机推送。")
 
     def start_alert_sound_loop(self) -> None:
         if not self.alert_active or not bool(self.vars["sound"].get()):
@@ -1052,7 +1058,7 @@ class LocalGuardApp:
             except Exception:
                 pass
 
-    def acknowledge_alert(self, log_message: bool = True) -> None:
+    def acknowledge_alert(self, log_message: bool = True, stop_monitoring_on_ack: bool = True) -> None:
         was_active = self.alert_active
         self.alert_active = False
         self.stop_alert_sound_loop()
@@ -1071,7 +1077,16 @@ class LocalGuardApp:
             self.alert_popup = None
         if was_active and log_message:
             self.log("告警已确认，声音已停止。")
-        if self.monitoring:
+        if stop_monitoring_on_ack and self.monitoring:
+            self.monitoring = False
+            if self.grabber is not None:
+                self.grabber.close()
+                self.grabber = None
+            self.start_button.configure(state="normal")
+            self.stop_button.configure(state="disabled")
+            self.status_var.set("已停止")
+            self.log("确认告警后已停止监控。")
+        elif self.monitoring:
             self.status_var.set("监控中")
 
     def mobile_push_enabled(self) -> bool:
@@ -1083,7 +1098,7 @@ class LocalGuardApp:
         try:
             send_ntfy_message(
                 self.vars["ntfy_server"].get(),
-                NTFY_TOPIC,
+                normalize_ntfy_topic(self.vars["ntfy_topic"].get()) or DEFAULT_NTFY_TOPIC,
                 title,
                 message,
                 priority,
@@ -1119,6 +1134,9 @@ class LocalGuardApp:
         if not bool(self.vars["mobile_push"].get()):
             messagebox.showinfo(APP_NAME, "请先勾选“启用 ntfy 手机告警”。")
             return
+        if not normalize_ntfy_topic(self.vars["ntfy_topic"].get()):
+            messagebox.showwarning(APP_NAME, "请先填写 ntfy Topic。")
+            return
         message = "EVE_ALERT_START\nsource=test\n这是 EVE Local Guard 测试手机告警。"
         if self.send_mobile_message("EVE_ALERT_START", message, priority=5):
             self.log("测试手机推送已发送。")
@@ -1147,6 +1165,10 @@ class LocalGuardApp:
             pass
 
     def test_sound(self) -> None:
+        if not bool(self.vars["software_alert"].get()):
+            self.log("软件报警已关闭，测试声音不会播放。")
+            messagebox.showinfo(APP_NAME, "软件报警已关闭。勾选“软件报警”后再测试声音。")
+            return
         if not bool(self.vars["sound"].get()):
             self.log("声音开关已关闭，测试声音不会播放。")
             messagebox.showinfo(APP_NAME, "声音开关已关闭。勾选“声音”后再测试。")
